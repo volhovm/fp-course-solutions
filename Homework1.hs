@@ -23,7 +23,7 @@ stringSum s = loop 0 s
             ('+':xs) -> if isDigit (head xs) then cont xs else fail'
             s''      -> cont s''
 
-zipN :: ([a] -> b) -> [[a]] -> [b]
+zipN, zipN' :: ([a] -> b) -> [[a]] -> [b]
 zipN foo input =
     catMaybes $
     takeWhile isJust $
@@ -31,6 +31,9 @@ zipN foo input =
                    [] -> Nothing
                    a  -> Just $ foo a)
         [0..]
+--zipN' _ input   | any null input = []
+zipN' _ input   | null $ head input = []
+zipN' foo input = foo (map head input) : zipN' foo (map tail input)
 
 mergeSort :: [Int] -> [Int]
 mergeSort a | length a < 2 = a
