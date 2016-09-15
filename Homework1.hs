@@ -3,7 +3,7 @@ module Main (main) where
 import           Control.Lens
 import           Control.Monad  (forM_, unless)
 import           Data.Bifunctor (bimap, first)
-import           Data.Char      (isDigit)
+import           Data.Char      (isDigit, isSpace)
 import           Data.Maybe     (catMaybes, isJust)
 import           System.Random  (newStdGen, randomRs)
 
@@ -11,14 +11,16 @@ stringSum :: String -> Int
 stringSum "" = 0
 stringSum s = loop 0 s
   where
+    fail' = error "can't parse"
     parseInt :: String -> (Int,String)
-    parseInt = head . reads
-    nextChunk = dropWhile (\c -> not $ isDigit c || c `elem` "+-")
+    parseInt s' = case reads s' of
+         []    -> fail'
+         (x:_) -> x
     loop acc s' =
         let cont = uncurry loop . first (+acc) . parseInt in
-        case nextChunk s' of
+        case dropWhile isSpace s' of
             []       -> acc
-            ('+':xs) -> cont xs
+            ('+':xs) -> if isDigit (head xs) then cont xs else fail'
             s''      -> cont s''
 
 zipN :: ([a] -> b) -> [[a]] -> [b]
