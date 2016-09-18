@@ -6,6 +6,7 @@
 {-# LANGUAGE ScopedTypeVariables   #-}
 {-# LANGUAGE TemplateHaskell       #-}
 {-# OPTIONS_GHC -fno-warn-unused-binds #-}
+{-# OPTIONS_GHC -fno-warn-incomplete-patterns #-}
 
 module Main (main) where
 
@@ -16,20 +17,25 @@ import           Control.Monad.Extra    (unlessM)
 import           Control.Monad.IO.Class (MonadIO (..))
 import           Control.Monad.Loops    (untilM_, whileM_)
 import           Control.Monad.State    (MonadState (..), execStateT)
-import           Prelude                hiding (log)
-import           System.Random          (StdGen, mkStdGen, randomR)
+import           Data.Foldable          (foldr')
+import qualified Data.List              as L (find)
+import           Data.Tree              (Tree (..))
+import           Data.Tree.Pretty       (drawVerticalTree)
+import           Debug.Trace
+import           Prelude                hiding (delete, elem, log)
+import           System.Random          (StdGen, mkStdGen, randomR, randomRIO)
 
 
 safeTail :: [a] -> Either String [a]
 safeTail [] = Left "Couldn't get the tail of empty list"
 safeTail x  = Right $ tail x
 
-safeInit :: [a] -> Either String a
-safeInit [] = Left "Can't get the head of empty list"
-safeInit x  = Right $ head x
+safeInit :: [a] -> Either String [a]
+safeInit [] = Left "Can't get the init of empty list"
+safeInit x  = Right $ init x
 
 strip :: [a] -> Either String [a]
-strip x = reverse <$> join (safeTail . reverse <$> safeTail x)
+strip x = join $ safeInit <$> safeTail x
 
 -----------------------------------------------
 
@@ -140,5 +146,93 @@ startGame monstersN = do
     game = do
       replicateM_ monstersN addMonster
       beginGloriousBattle
+
+
+-----------------------------------------------
+
+data BTree a = BNode a (BTree a) (BTree a) | BNil
+               deriving (Show)
+
+toTree :: (Show a) => BTree a -> Tree String
+toTree (BNode e BNil BNil ) = Node (show e) []
+toTree (BNode e BNil b)     = Node (show e) [toTree b]
+toTree (BNode e a BNil )    = Node (show e) [toTree a]
+toTree (BNode e a b)        = Node (show e) [toTree a, toTree b]
+toTree BNil                 = Node "*" []
+
+printTree :: (Show a) => BTree a -> IO ()
+printTree = putStrLn . drawVerticalTree . toTree
+
+-- malformed tho
+fullTree :: Int -> IO (BTree Int)
+fullTree a | a < 0 = error "positive depth expected"
+fullTree 0 = pure BNil
+fullTree n = BNode <$> randomRIO (0, 99) <*> fullTree (n-1) <*> fullTree (n-1)
+
+toList :: BTree a -> [a]
+toList k = toList' k []
+  where
+    toList' :: BTree a -> ([a] -> [a])
+    toList' (BNode a l r) = toList' l . (a :) . toList' r
+    toList' BNil          = id
+
+toListPlain :: BTree a -> [a]
+toListPlain (BNode a l r) = toListPlain l ++ [a] ++ toListPlain r
+toListPlain BNil          = []
+
+{- Diff lists!
+
+λ> tree <- fullTree 20
+(6.67 secs, 2,499,906,896 bytes)
+λ> let listPlain = toListPlain tree
+(0.00 secs, 70,880 bytes)
+λ> let listDiff = toList tree
+0.00 secs, 70,800 bytes)
+λ> show $ last listPlain
+"35"
+(2.05 secs, 1,585,555,440 bytes)
+λ> show $ last listDiff
+"35"
+(1.08 secs, 536,982,352 bytes)
+
+-}
+
+fromList :: (Ord a) => [a] -> BTree a
+fromList [] = BNil
+fromList xs = foldr' insert BNil xs
+
+find :: (a -> Bool) -> BTree a -> Maybe a
+find predic = L.find predic . toList
+
+elem :: (Ord a) => a -> BTree a -> Bool
+elem _ BNil          = False
+elem v (BNode a l r) = a == v || v `elem` l || v `elem` r
+
+insert :: (Ord a) => a -> BTree a -> BTree a
+insert v BNil          = BNode v BNil BNil
+insert v a@(BNode e l r)
+    | v == e = a
+    | v < e = BNode e (insert v l) r
+    | v > e = BNode e l (insert v r)
+
+delete :: (Ord a) => a -> BTree a -> BTree a
+delete v (BNode e l r) | e == v =
+    case (l,r) of
+        (BNil, BNil)             -> BNil
+        (BNil, n@BNode{})        -> n
+        (n@BNode{}, BNil)        -> n
+        (nl, nr) -> let e' = leftmost nr
+                    in BNode e' nl (delete e' nr)
+delete v (BNode e l r) | v < e = BNode e (delete v l) r
+delete v (BNode e l r) | v > e = BNode e l (delete v r)
+delete _ BNil = error "delete shouldn't reach bnil"
+
+leftmost :: BTree a -> a
+leftmost BNil             = error "shouldn't be called of nil"
+leftmost (BNode e BNil _) = e
+leftmost (BNode _ l _)    = leftmost l
+
+----------------------------------------
+-- binomial heap --
 
 main = undefined
