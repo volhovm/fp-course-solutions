@@ -37,6 +37,7 @@ stringSum s = loop 0 s
 -}
 
 zipN :: ([a] -> b) -> [[a]] -> [b]
+zipN _ [] = []
 zipN _ input   | null $ head input = []
 zipN foo input =
     let (heads,lefts) = splitLists input
