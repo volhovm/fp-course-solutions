@@ -219,7 +219,11 @@ find predic = L.find predic . toList
 -- Works with infinite trees
 elem :: (Ord a) => a -> BTree a -> Bool
 elem _ BNil          = False
-elem v (BNode a l r) = a == v || v `elem` l || v `elem` r
+elem v (BNode a l r) =
+    case compare a v of
+        EQ -> True
+        LT -> v `elem` l
+        GT -> v `elem` r
 
 -- works with infinite trees
 insert :: (Ord a) => a -> BTree a -> BTree a
