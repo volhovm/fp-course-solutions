@@ -10,8 +10,8 @@
 
 module Main (main) where
 
-import           Control.Lens           (makeLenses, to, use, uses, (%=), (+~),
-                                         (-=), (.=), (^.), _head)
+import           Control.Lens           (makeLenses, to, use, uses, (%=), (+~), (-=),
+                                         (.=), (^.), _head)
 import           Control.Monad          (join, replicateM, replicateM_, when)
 import           Control.Monad.Extra    (unlessM)
 import           Control.Monad.IO.Class (MonadIO (..))
@@ -19,6 +19,7 @@ import           Control.Monad.Loops    (untilM_, whileM_)
 import           Control.Monad.State    (MonadState (..), execStateT)
 import           Data.Foldable          (foldr')
 import qualified Data.List              as L (find)
+import qualified Data.Set               as S
 import           Data.Tree              (Tree (..))
 import           Data.Tree.Pretty       (drawVerticalTree)
 import           Debug.Trace
@@ -169,6 +170,7 @@ fullTree a | a < 0 = error "positive depth expected"
 fullTree 0 = pure BNil
 fullTree n = BNode <$> randomRIO (0, 99) <*> fullTree (n-1) <*> fullTree (n-1)
 
+-- Doesn't work with infinite lists
 toList :: BTree a -> [a]
 toList k = toList' k []
   where
@@ -197,17 +199,29 @@ toListPlain BNil          = []
 
 -}
 
+toListInf :: BTree a -> [a]
+toListInf t             = bfs [t]
+  where
+    bfs []             = []
+    bfs (x:xs) = case x of
+        BNode a l r -> a : (bfs $ l : r : xs)
+        BNil        -> bfs xs
+
+-- Works with infinite lists -- hangs
 fromList :: (Ord a) => [a] -> BTree a
 fromList [] = BNil
 fromList xs = foldr' insert BNil xs
 
+-- Shouldn't work with infinite lists
 find :: (a -> Bool) -> BTree a -> Maybe a
 find predic = L.find predic . toList
 
+-- Works with infinite trees
 elem :: (Ord a) => a -> BTree a -> Bool
 elem _ BNil          = False
 elem v (BNode a l r) = a == v || v `elem` l || v `elem` r
 
+-- works with infinite trees
 insert :: (Ord a) => a -> BTree a -> BTree a
 insert v BNil          = BNode v BNil BNil
 insert v a@(BNode e l r)
@@ -231,6 +245,20 @@ leftmost :: BTree a -> a
 leftmost BNil             = error "shouldn't be called of nil"
 leftmost (BNode e BNil _) = e
 leftmost (BNode _ l _)    = leftmost l
+
+-- stupid delete implementation that works with infinite lists (hehe)
+deleteInf :: (Ord a) => a -> BTree a -> BTree a
+deleteInf v (BNode e l r) | e == v =
+    case (l,r) of
+        (BNil, BNil)             -> BNil
+        (BNil, n@BNode{})        -> n
+        (n@BNode{}, BNil)        -> n
+        (nl, nr) -> let flattenLists x y = concatMap (\(a,b) -> [a,b]) $ zip x y
+                        in fromList $ flattenLists (toListInf nl) (toListInf nr)
+
+deleteInf v (BNode e l r) | v < e = BNode e (delete v l) r
+deleteInf v (BNode e l r) | v > e = BNode e l (delete v r)
+deleteInf _ BNil          = error "delete shouldn't reach bnil"
 
 ----------------------------------------
 -- binomial heap --
