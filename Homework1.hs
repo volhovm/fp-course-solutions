@@ -23,17 +23,28 @@ stringSum s = loop 0 s
             ('+':xs) -> if isDigit (head xs) then cont xs else fail'
             s''      -> cont s''
 
-zipN, zipN' :: ([a] -> b) -> [[a]] -> [b]
+{-
+λ> zipN sum [[1], [], [3]]
+[1]
+λ> zipN sum [ [1, 2, 3]  , [4, 5, 6] , [7, 8, 9]]
+[12,15,18]
+λ> take 5 $ zipN (take 3) $ repeat [0..]
+[[0,0,0],[1,1,1],[2,2,2],[3,3,3],[4,4,4]]
+λ> zipN (take 2) $ [[1]] ++ repeat []
+[[1]]
+λ> take 5 $ zipN (take 3) $ repeat [0..1]
+[[0,0,0],[1,1,1]]
+-}
+
+zipN :: ([a] -> b) -> [[a]] -> [b]
+zipN _ input   | null $ head input = []
 zipN foo input =
-    catMaybes $
-    takeWhile isJust $
-    map (\i -> case input ^.. (each . ix i) of
-                   [] -> Nothing
-                   a  -> Just $ foo a)
-        [0..]
---zipN' _ input   | any null input = []
-zipN' _ input   | null $ head input = []
-zipN' foo input = foo (map head input) : zipN' foo (map tail input)
+    let (heads,lefts) = splitLists input
+    in foo heads : zipN foo lefts
+  where
+    splitLists []         = ([], [])
+    splitLists ([]:_)     = ([], [])
+    splitLists ((a:xs):l) = bimap (a :) (xs :) $ splitLists l
 
 mergeSort :: [Int] -> [Int]
 mergeSort a | length a < 2 = a
