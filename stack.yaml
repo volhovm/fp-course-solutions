@@ -2,9 +2,13 @@ resolver: lts-7.11
 
 packages:
 - '.'
+- location:
+    git: https://github.com/serokell/universum
+    commit: d347ccf3605d0851dd0f7046fe63f364510ef1a0
+  extra-dep: true
 
-nix: 
+nix:
   shell-file: shell.nix
 
 extra-deps:
-- pretty-tree-0.1
+- pretty-tree-0.1.0.0

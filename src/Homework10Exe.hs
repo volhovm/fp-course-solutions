@@ -16,6 +16,4 @@ data Kek = Kek
 
 genPrettyShow ''Kek
 
-
-
 main = "kek"

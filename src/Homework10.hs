@@ -1,3 +1,5 @@
+{-# LANGUAGE LambdaCase        #-}
+{-# LANGUAGE NoImplicitPrelude #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes       #-}
 {-# LANGUAGE RankNTypes        #-}
@@ -7,17 +9,23 @@
 
 module Homework10 where
 
+import qualified Base
 import           Control.DeepSeq        (deepseq, ($!!))
+import           Control.Lens           (makeLenses, makePrisms)
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Functor.Const     (Const (..))
 import           Data.Functor.Identity  (Identity (..))
+import           Data.List              (last)
 import           Data.Maybe             (fromMaybe)
 import           Language.Haskell.TH    (Body (..), Clause (..), Con (..), Dec (..),
                                          Exp (..), Info (..), Lit (..), Name (..),
                                          Pat (..), Q, conT, listE, nameBase, newName,
                                          reify, varE)
+import           System.Directory       (doesDirectoryExist, doesFileExist, listDirectory)
 import           System.Environment     (lookupEnv)
+import           System.FilePath        (splitPath, takeFileName, (</>))
 import           System.IO.Unsafe       (unsafePerformIO)
+import           Universum
 
 import           Fib                    (fib)
 
@@ -27,7 +35,7 @@ import           Fib                    (fib)
 
 -- | Selects elem #m from tuple of size n.
 selN :: Int -> Int -> Q Exp
-selN m n | m >= n = error "selN wrong params"
+selN m n | m >= n = panic "selN wrong params"
 selN m n = do
     x <- newName "x"
     pure $ LamE [TupP (insWild m ++ [VarP x] ++ insWild (n - m - 1))] $ VarE x
@@ -52,9 +60,9 @@ selN m n = do
 -- the time of compilation or "Not defined" if it wasn,t defined.
 printEnvVar :: Q [Dec]
 printEnvVar = do
-    let thenvVal :: String
+    let thenvVal :: [Char]
         thenvVal = fromMaybe "Not defined" $ unsafePerformIO (lookupEnv "TH_ENV")
-        kek = id $!! unsafePerformIO (putStrLn $ "TH_ENV=" ++ thenvVal)
+        kek = identity $!! unsafePerformIO (putStrLn $ "TH_ENV=" ++ thenvVal)
     fooname <- kek `deepseq` newName "th_env_value"
     pure $ [FunD fooname [Clause [] (NormalB $ LitE $ StringL thenvVal) []]]
 
@@ -81,7 +89,7 @@ genPrettyShow :: Name -> Q [Dec]
 genPrettyShow name = do
     TyConI (DataD _ _ _ _ [RecC _ fields] _) <- reify name
     let names = map (\(name,_,_) -> name) fields
-        conName :: String
+        conName :: [Char]
         conName = nameBase name
         showField :: Name -> Q Exp
         showField name' =
@@ -89,15 +97,15 @@ genPrettyShow name = do
             in [|\x -> fieldName ++ " = " ++ show ($(varE name') x)|]
         showFields :: Q Exp
         showFields = listE $ map showField names
-    [d|instance Show $(conT name) where
+    [d|instance Base.Show $(conT name) where
           show x =
               let indent = "    "
                   fieldsShown = intercalate (",\n" ++ indent) (map ($ x) $showFields)
-              in mconcat [ conName
-                         , " {\n"
-                         , indent
-                         , fieldsShown
-                         , "\n}" ]
+              in concat [ conName
+                        , " {\n"
+                        , indent
+                        , fieldsShown
+                        , "\n}" ]
           |]
 
 {-
@@ -164,7 +172,45 @@ over' l c = runIdentity . l (Identity . c)
 
 -- | VFS representation
 data FS
-    = Dir { name     :: FilePath
-          , contents :: [FS]}
-    | File { name :: FilePath}
+    = Dir { _name     :: FilePath
+          , _contents :: [FS]}
+    | File { _name :: FilePath}
     deriving (Show)
+
+makeLenses ''FS
+makePrisms ''FS
+
+retrieveFS ::  FilePath -> IO FS
+retrieveFS fs = do
+    ((,) <$> doesFileExist fs <*> doesDirectoryExist fs) >>= \case
+        (True,False) -> pure $ File $ takeFileName fs
+        (False,True) -> do
+            content <- listDirectory fs
+            Dir (last $ splitPath fs) <$> mapM (retrieveFS . (</>) fs) content
+        _ -> panic $ "retrieveF failed on path: " <> show fs
+
+{-
+λ> retrieveFS "/home/volhovm/code/fp-course-solutions/src"
+Dir {_name = "src",
+     _contents = [ File {_name = "Homework3.hs"},
+                   File {_name = "Fib.hs"},
+                   File {_name = "Setup.hs"},
+                   File {_name = "Homework10.hs"},
+                   File {_name = "BTree.hs"},
+                   File {_name = "Homework2.hs"},
+                   Dir {_name = "kek", _contents = [File {_name = "mda"}]},
+                   File {_name = "Main.hs"},
+                   File {_name = "Homework10Exe.hs"},
+                   File {_name = "Homework1.hs"}]}
+
+λ> k <- retrieveFS "src"
+λ> k ^. name
+"src"
+λ> k ^. contents
+[File {_name = "Homework3.hs"},File {_name = "Fib.hs"},File {_name = "Setup.hs"},File {_name = "Homework10.hs"},File {_name = "BTree.hs"},File {_name = "Homework2.hs"},Dir {_name = "kek", _contents = [File {_name = "mda"}]},File {_name = "Main.hs"},File {_name = "Homework10Exe.hs"},File {_name = "Homework1.hs"}]
+λ> k ^? _File
+Nothing
+λ> k ^? _Dir
+Just ("src",[File {_name = "Homework3.hs"},File {_name = "Fib.hs"},File {_name = "Setup.hs"},File {_name = "Homework10.hs"},File {_name = "BTree.hs"},File {_name = "Homework2.hs"},Dir {_name = "kek", _contents = [File {_name = "mda"}]},File {_name = "Main.hs"},File {_name = "Homework10Exe.hs"},File {_name = "Homework1.hs"}])
+
+-}
