@@ -168,22 +168,3 @@ data FS
           , contents :: [FS]}
     | File { name :: FilePath}
     deriving (Show)
-
-
-{-
-
-* type MySas a = StateT (ProgState) (ReaderT Env IO) a
-* instance MonadReader Env MySas where ...
-* instance MonadState ProgState MySas where ...
---* instance MonadState (Map . .) MySas where ...
---* instance MonadState (Map a b, ProgState) MySas where ...
---  get = do
---    a <- foo $ ask -- foo :: IORef -> Map
---    b <- lift $ get
-
-kek :: (MonadState s m, HasA s, HasB s) => m b
-kek = do
-  a <- view fieldA
-  b <- view fieldB
-
--}

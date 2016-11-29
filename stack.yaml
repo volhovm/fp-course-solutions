@@ -1,0 +1,10 @@
+resolver: lts-7.11
+
+packages:
+- '.'
+
+nix: 
+  shell-file: shell.nix
+
+extra-deps:
+- pretty-tree-0.1
