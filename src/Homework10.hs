@@ -247,14 +247,8 @@ Just ("src",[File {_name = "Homework3.hs"},File {_name = "Fib.hs"},File {_name =
 
 -- | Lens on every subfolder that matches (== dirname)
 cd :: FilePath -> Traversal' FS FS
-cd _ _ o@(File _) = pure o
-cd dirname foo (Dir name contents) =
-    let matched = filter dirMatches contents
-        others = filter (not . dirMatches) contents
-    in Dir name . (others ++) <$> traverse foo matched
-  where
-    dirMatches (File _)  = False
-    dirMatches (Dir n _) = n == dirname -- insert '*' matching here
+cd dirname =
+    contents . traversed . filtered (\x -> isDir x && x ^. fname == dirname)
 
 {-
 λ> t <- retrieveFS "."
@@ -271,29 +265,20 @@ cd dirname foo (Dir name contents) =
 
 -- | Lens on directory contents (same as `contents`, almost)
 ls :: Traversal' FS FS
-ls _ o@(File _)            = pure o
-ls foo (Dir name contents) = Dir name <$> traverse foo contents
+ls = contents . each
 
 -- | Lens on every file in dir that matches (== filename)
 file :: FilePath -> Traversal' FS FS
-file _ _ o@(File _) = pure o
-file filename foo (Dir name contents) =
-    Dir name <$> traverse foo (filter dirMatches contents)
-  where
-    dirMatches (File n) = n == filename
-    dirMatches _        = False
+file filename =
+    contents . traversed . filtered (\x -> isFile x && x ^. fname == filename)
 
 ----------------------------------------------------------------------------
 -- Task 8
 ----------------------------------------------------------------------------
 
 files,dirs :: Traversal' FS FS
-files _ o@(File _)     = pure o
-files foo (Dir name c) =
-    Dir name . (filter isDir c ++) <$> traverse foo (filter isFile c)
-dirs _ o@(File _)     = pure o
-dirs foo (Dir name c) =
-    Dir name . (filter isFile c ++) <$> traverse foo (filter isDir c)
+files = contents . traversed . filtered isFile
+dirs = contents . traversed . filtered isFile
 
 changeExtension :: [Char] -> FS -> FS
 changeExtension newExt = files . fname %~ flip replaceExtension newExt
