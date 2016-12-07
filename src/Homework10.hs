@@ -1,9 +1,12 @@
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE QuasiQuotes       #-}
-{-# LANGUAGE RankNTypes        #-}
-{-# LANGUAGE TemplateHaskell   #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE NoImplicitPrelude   #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE QuasiQuotes         #-}
+{-# LANGUAGE RankNTypes          #-}
+{-# LANGUAGE RecordWildCards     #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TemplateHaskell     #-}
 
 -- | Solutions for homework 10
 
@@ -15,8 +18,11 @@ import           Control.Lens           hiding ((&))
 import           Control.Monad.IO.Class (liftIO)
 import           Data.Functor.Const     (Const (..))
 import           Data.Functor.Identity  (Identity (..))
-import           Data.List              (last)
+import           Data.List              (last, (\\))
 import           Data.Maybe             (fromMaybe)
+import           Data.Tagged            (Tagged (..))
+import qualified Data.Text              as T
+import           Data.Tree              (Tree (..))
 import           Language.Haskell.TH    (Body (..), Clause (..), Con (..), Dec (..),
                                          Exp (..), Info (..), Lit (..), Name (..),
                                          Pat (..), Q, conT, listE, nameBase, newName,
@@ -176,6 +182,7 @@ data FS
     = Dir { _fname    :: FilePath
           , _contents :: [FS]}
     | File { _fname :: FilePath}
+    deriving (Eq)
 
 instance Show FS where
     show (File n) = n
@@ -189,10 +196,12 @@ instance Show FS where
 makeLenses ''FS
 makePrisms ''FS
 
-isFile, isDir :: FS -> Bool
+isFile, isDir, isEmpty :: FS -> Bool
 isFile (File _)  = True
 isFile (Dir _ _) = False
 isDir = not . isFile
+isEmpty (File _)  = True
+isEmpty (Dir _ c) = null c
 
 retrieveFS ::  FilePath -> IO FS
 retrieveFS fs = do
@@ -280,10 +289,13 @@ file filename foo (Dir name contents) =
 -- Task 8
 ----------------------------------------------------------------------------
 
-files :: Traversal' FS FS
+files,dirs :: Traversal' FS FS
 files _ o@(File _)     = pure o
 files foo (Dir name c) =
     Dir name . (filter isDir c ++) <$> traverse foo (filter isFile c)
+dirs _ o@(File _)     = pure o
+dirs foo (Dir name c) =
+    Dir name . (filter isFile c ++) <$> traverse foo (filter isDir c)
 
 changeExtension :: [Char] -> FS -> FS
 changeExtension newExt = files . fname %~ flip replaceExtension newExt
@@ -320,7 +332,7 @@ fnameRec :: Traversal' FS FilePath
 fnameRec = getNamesRec False
   where
     getNamesRec :: Bool -> Traversal' FS FilePath
-    getNamesRec _ _ o@(File _) = pure o
+    getNamesRec _ foo o@(File _) = pure o -- not used
     getNamesRec incl foo (Dir name contents) =
         let changedFiles = traverse (fname foo) $ filter isFile contents
             changedDirs =
@@ -355,4 +367,218 @@ fnameRec = getNamesRec False
     Homework10Exe.hs.LOL
     Homework1.hs.LOL
     kek.LOL ->
+-}
+
+-- | Traversal on FS with deleted stuff. First flag is boolean.
+rm :: Bool -> [Char] -> FS -> FS
+rm _ _ o@(File _) = o
+rm force fileName d@(Dir name c) =
+    let files' = d ^.. files . filtered (\x -> x ^. fname /= fileName)
+        dirs' = d ^.. dirs . filtered
+                (\x -> x ^. fname /= fileName && (not (isEmpty x) || force))
+    in Dir name $ files' ++ dirs'
+
+{-
+λ> t ^?! cd "src" . to (rm True "Main.hs")
+src ->
+  Homework3.hs
+  Fib.hs
+  Setup.hs
+  Homework10.hs
+  BTree.hs
+  Homework2.hs
+  Homework10Exe.hs
+  Homework1.hs
+  kek ->
+-}
+
+
+-- | Lawless move that accumulates relative path
+move :: FilePath -> Traversal' FS FS
+move name foo o@(File n) | n == name = foo o
+                         | otherwise = pure o
+move name foo (Dir n contents) =
+    let p = map (\x -> x & fname %~ (n </>))
+        matched = p $ filter matches contents
+        others = p $ filter (not . matches) contents
+    in Dir name . (others ++) <$> traverse foo matched
+  where
+    matches x = x ^. fname  == name
+
+{-
+λ> t ^?! move "src" . move "kek" . move "MDA"
+./src/kek/MDA
+-}
+
+-- Was not used
+fsPath :: FS -> [[Char]]
+fsPath (File n)  = [n]
+fsPath (Dir n c) = concatMap (map (n </>) . fsPath) c
+
+----------------------------------------------------------------------------
+-- Task 9
+----------------------------------------------------------------------------
+
+type Walker = StateT [(Int, Int, [Char])] (ReaderT FS IO)
+
+getWalkerFS :: forall f . Applicative f => Walker (LensLike' f FS FS)
+getWalkerFS = do
+    k <- uses identity $ map (view _3)
+    pure $ applyAll $ reverse k
+  where
+    applyAll []     = identity
+    applyAll (x:xs) = cd x . applyAll xs
+
+printStats :: Walker ()
+printStats = do
+    (i,j,_) <- uses identity $ fromMaybe (0,0,"") . head
+    p <- uses identity $ map $ view _3 -- better?
+    start <- views fname T.pack
+    putText $ "You're in " <>
+        T.intercalate "/" (start : reverse (map T.pack p))
+    putText $ "Files from root: " <> show i
+    putText $ "Dirs from root: " <> show j
+
+walkerMain :: Walker ()
+walkerMain = do
+    putText "\n-----------"
+    printStats
+    liftIO $ putStr ("> " :: Text)
+    root <- view identity
+    cmd <- getLine
+    case words cmd of
+      ["cd",to'] -> do
+          let subdir = T.unpack to'
+          f <- getWalkerFS
+          if isJust $ root ^? f . cd subdir
+          then do
+              f' <- getWalkerFS -- conflict Endo/First with 'f'
+              putText "Let's go ok"
+              let files', dirs' :: Int
+                  files' = length $ root ^.. f' . files
+                  dirs' = length $ root ^.. f' . dirs
+              identity %= \case
+                 [] -> [(files',dirs',subdir)]
+                 xs@((f,d,_):_) -> (files'+f,dirs'+d,subdir):xs
+          else putText "Won't go, didn't find such dir"
+      ["up"] -> putText "Going up" >> identity %= drop 1
+      ["ls"] -> do
+          f <- getWalkerFS
+          putText $ T.intercalate "\n" $ root ^.. f . ls . fname . to T.pack
+      _    -> putText "Wrong command"
+    walkerMain
+
+runWalker :: [Char] -> IO ()
+runWalker startPath = do
+    fsStart <- retrieveFS startPath
+    void $ runReaderT (runStateT walkerMain []) fsStart
+
+{-
+λ> runWalker "/home/volhovm/code/fp-course-solutions"
+
+-----------
+You're in fp-course-solutions
+Files from root: 0
+Dirs from root: 0
+> ls
+shell.nix
+.stack-work
+src
+fp-course-solutions.cabal
+ChangeLog.md
+stack.yaml
+LICENSE
+.git
+.gitignore
+
+-----------
+You're in fp-course-solutions
+Files from root: 0
+Dirs from root: 0
+> cd src
+Let's go ok
+
+-----------
+You're in fp-course-solutions/src
+Files from root: 6
+Dirs from root: 3
+> ls
+Homework3.hs
+Fib.hs
+Setup.hs
+Homework10.hs
+BTree.hs
+Homework2.hs
+kek
+Main.hs
+Homework10Exe.hs
+Homework1.hs
+
+-----------
+You're in fp-course-solutions/src
+Files from root: 6
+Dirs from root: 3
+> cd kek
+Let's go ok
+
+-----------
+You're in fp-course-solutions/src/kek
+Files from root: 15
+Dirs from root: 4
+> ls
+MDA
+
+-----------
+You're in fp-course-solutions/src/kek
+Files from root: 15
+Dirs from root: 4
+>
+-}
+
+----------------------------------------------------------------------------
+-- Task 10
+----------------------------------------------------------------------------
+
+type Iso2 b a = forall p f. (Profunctor p, Functor f) => p a (f a) -> p b (f b)
+
+-- I just used type holes to complete this definition in 10s
+iso' :: (b -> a) -> (a -> b) -> Iso2 b a
+iso' from to a = dimap from (fmap to) a
+
+-- p1 :: forall p f. (Profunctor p, Functor f) => p a (f a) -> p b (f b)
+-- p1 :: forall p f. (Functor f) => (a -> f a) -> (b -> f b)
+-- p1 :: forall p f. (Functor f) => Tagged * (f a) -> Tagged * (f b)
+from' :: Iso2 b a -> Iso2 a b
+from' p1 x =
+    dimap
+    (\a -> unTagged $ unTagged $ p1 $ Tagged $ Tagged a)
+    (\fb -> fmap getConst $ p1 Const <$> fb)
+    x
+
+-- | Isomorphism between tree and FS
+treeFsIso :: Iso2 (Tree [Char]) FS
+treeFsIso p1 = dimap fromTree (fmap toTree) p1
+  where
+    fromTree Node{..} | null subForest = File rootLabel
+    fromTree Node{..} = Dir rootLabel $ map fromTree subForest
+    toTree (File n)  = Node n []
+    toTree (Dir n c) = Node n $ map toTree c
+
+{-
+λ> t <- retrieveFS "/home/volhovm/code/fp-course-solutions"
+λ> t ^?! cd "src"
+src ->
+  Homework3.hs
+  Fib.hs
+  Setup.hs
+  Homework10.hs
+  BTree.hs
+  Homework2.hs
+  kek ->
+    MDA
+  Main.hs
+  Homework10Exe.hs
+  Homework1.hs
+λ> (t ^?! cd "src") ^. from treeFsIso
+Node {rootLabel = "src", subForest = [Node {rootLabel = "Homework3.hs", subForest = []},Node {rootLabel = "Fib.hs", subForest = []},Node {rootLabel = "Setup.hs", subForest = []},Node {rootLabel = "Homework10.hs", subForest = []},Node {rootLabel = "BTree.hs", subForest = []},Node {rootLabel = "Homework2.hs", subForest = []},Node {rootLabel = "kek", subForest = [Node {rootLabel = "MDA", subForest = []}]},Node {rootLabel = "Main.hs", subForest = []},Node {rootLabel = "Homework10Exe.hs", subForest = []},Node {rootLabel = "Homework1.hs", subForest = []}]}
 -}

@@ -36,7 +36,9 @@ executable fp-course-solutions
                     , mtl >=2.2
                     , pretty-tree >=0.1
                     , random >=1.1
+                    , tagged >= 0.8.5
                     , template-haskell >=2.11
+                    , text >= 1.2.2.1
                     , universum >= 0.1.11
   hs-source-dirs:     src
   default-language:   Haskell2010
