@@ -26,7 +26,7 @@ import           Data.Tree              (Tree (..))
 import           Language.Haskell.TH    (Body (..), Clause (..), Con (..), Dec (..),
                                          Exp (..), Info (..), Lit (..), Name (..),
                                          Pat (..), Q, conT, listE, nameBase, newName,
-                                         reify, varE)
+                                         reify, runIO, varE)
 import           System.Directory       (doesDirectoryExist, doesFileExist, listDirectory)
 import           System.Environment     (lookupEnv)
 import           System.FilePath        (replaceExtension, splitPath, takeExtension,
@@ -67,10 +67,9 @@ selN m n = do
 -- the time of compilation or "Not defined" if it wasn,t defined.
 printEnvVar :: Q [Dec]
 printEnvVar = do
-    let thenvVal :: [Char]
-        thenvVal = fromMaybe "Not defined" $ unsafePerformIO (lookupEnv "TH_ENV")
-        kek = identity $!! unsafePerformIO (putStrLn $ "TH_ENV=" ++ thenvVal)
-    fooname <- kek `deepseq` newName "th_env_value"
+    thenvVal <- fromMaybe "Not defined" <$> runIO (lookupEnv "TH_ENV")
+    runIO $ putStrLn $ "TH_ENV=" ++ thenvVal
+    fooname <- newName "th_env_value"
     pure $ [FunD fooname [Clause [] (NormalB $ LitE $ StringL thenvVal) []]]
 
 {-
@@ -84,7 +83,6 @@ TH_ENV=Not defined
 [1 of 2] Compiling Homework10       ( Homework10.hs, /tmp/Homework10.o )
 [2 of 2] Compiling Homework10Exe    ( Homework10Exe.hs, /tmp/Homework10Exe.o ) [TH]
 TH_ENV=domen kozar
-
 -}
 
 ----------------------------------------------------------------------------
@@ -335,8 +333,7 @@ fnameRec = getNamesRec False
     getNamesRec _ foo o@(File _) = pure o -- not used
     getNamesRec incl foo (Dir name contents) =
         let changedFiles = traverse (fname foo) $ filter isFile contents
-            changedDirs =
-                traverse (getNamesRec True foo) $ filter isDir contents
+            changedDirs = traverse (getNamesRec True foo) $ filter isDir contents
             combined = (++) <$> changedFiles <*> changedDirs
         in (if incl
             then (<*>) (Dir <$> foo name)
@@ -423,7 +420,7 @@ type Walker = StateT [(Int, Int, [Char])] (ReaderT FS IO)
 
 getWalkerFS :: forall f . Applicative f => Walker (LensLike' f FS FS)
 getWalkerFS = do
-    k <- uses identity $ map (view _3)
+    k <- use $ to $ map (view _3)
     pure $ applyAll $ reverse k
   where
     applyAll []     = identity
@@ -543,17 +540,16 @@ type Iso2 b a = forall p f. (Profunctor p, Functor f) => p a (f a) -> p b (f b)
 
 -- I just used type holes to complete this definition in 10s
 iso' :: (b -> a) -> (a -> b) -> Iso2 b a
-iso' from to a = dimap from (fmap to) a
+iso' from to = dimap from (fmap to)
 
 -- p1 :: forall p f. (Profunctor p, Functor f) => p a (f a) -> p b (f b)
 -- p1 :: forall p f. (Functor f) => (a -> f a) -> (b -> f b)
 -- p1 :: forall p f. (Functor f) => Tagged * (f a) -> Tagged * (f b)
 from' :: Iso2 b a -> Iso2 a b
-from' p1 x =
+from' p1 =
     dimap
     (\a -> unTagged $ unTagged $ p1 $ Tagged $ Tagged a)
     (\fb -> fmap getConst $ p1 Const <$> fb)
-    x
 
 -- | Isomorphism between tree and FS
 treeFsIso :: Iso2 (Tree [Char]) FS
