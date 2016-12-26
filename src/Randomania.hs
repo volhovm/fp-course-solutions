@@ -6,14 +6,18 @@
 
 module Randomania where
 
-import           Control.Concurrent.STM.TVar (TVar)
-import           Control.Monad.STM           (atomically)
-import qualified Crypto.Sign.Ed25519         as Ed25519
-import           Data.Binary                 (Binary)
-import           System.Random               (Random, StdGen, mkStdGen, randomR)
+import           Control.Concurrent           (forkIO)
+import           Control.Concurrent.STM.TMVar (TMVar)
+import           Control.Concurrent.STM.TVar  (TVar)
+import           Control.Monad.STM            (atomically)
+import qualified Crypto.Sign.Ed25519          as Ed25519
+import           Data.Binary                  (Binary)
+import           Data.List.NonEmpty           (NonEmpty ((:|)))
+import qualified Data.List.NonEmpty           as NE
+import           System.Random                (Random, StdGen, mkStdGen, randomR)
 import           Universum
 
-import           Crypto                      (PublicKey, SecretKey, Signature)
+import           Crypto                       (PublicKey, SecretKey, Signature)
 
 type BeingId = Ed25519.PublicKey
 type BeingEssense = Ed25519.SecretKey
@@ -37,12 +41,12 @@ instance Binary WorldResponse
 data Being = Being
     { _pHealth      :: Int
       -- ^ Physical body parameters. Negative == dead.
-    , _pGenerators  :: [StdGen]
-      -- ^ Random sources
     , _pSpeed       :: Int
       -- ^ Attack speed
     , _pInstability :: Int
       -- ^ Magic instability
+    , _pGenerators  :: NonEmpty StdGen
+      -- ^ Random sources
     }
 
 -- | What a sentient being thinks he is.
@@ -51,9 +55,9 @@ data BeingReflection = BeingReflection
       -- ^ Your physical parameters define how people distinguish you from else.
     , _reflEssense  :: BeingEssense
       -- ^ Your body is a proof that people recognize you as you.
-    , _reflAction   :: TVar Action
+    , _reflAction   :: TMVar Action
       -- ^ Action is what you think will happen next.
-    , _reflResponse :: TVar WorldResponse
+    , _reflResponse :: TMVar WorldResponse
       -- ^ But dharma decides how it will unfold.
     , _reflInspect  :: MVar Being
       -- ^ You can also reflect on your body, but changing this variable
@@ -81,12 +85,20 @@ data DharmaState = DharmaState
 -- possible, but meaningless in terms of dharma.
 newtype MagicianM a = MagicianM
     { getMagicianM :: StateT BeingReflection IO a
-    } deriving (Functor, Applicative, Monad, MonadState BeingReflection)
+    } deriving (Functor, Applicative, Monad, MonadState BeingReflection, MonadIO)
 
 newtype DharmaM a = DharmaM
     { fromDharmaM :: StateT (DharmaState) IO a
-    } deriving (Functor, Applicative, Monad, MonadState DharmaState)
+    } deriving (Functor, Applicative, Monad, MonadState DharmaState, MonadIO)
 
+
+spawnCreature :: MagicianM () -> DharmaM ()
+spawnCreature magician = do
+    let being = Being 200 10 (10 ^ 7) (mkStdGen 12345 :| [])
+        bRefl :: BeingReflection
+        bRefl = undefined
+    liftIO $ forkIO $ void $ runStateT (getMagicianM magician) bRefl
+    undefined
 
 sansaraRound :: DharmaM ()
 sansaraRound = do
