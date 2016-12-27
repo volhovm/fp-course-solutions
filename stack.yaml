@@ -8,7 +8,7 @@ packages:
   extra-dep: true
 - location:
     git: https://github.com/serokell/log-warper.git
-    commit: 14d0d2f391e2ebb6a9679f1dd117c325aff53637
+    commit: e05d74587ff9270891a3e57f1f15d9e91c8d2c83
   extra-dep: true
 - location:
     git: https://github.com/domenkozar/hs-ed25519.git
