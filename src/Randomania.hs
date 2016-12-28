@@ -17,9 +17,9 @@ import           Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar,
                                                tryTakeTMVar)
 import           Control.Concurrent.STM.TVar  (TVar, modifyTVar, newTVarIO, writeTVar)
 import           Control.Lens                 (at, filtered, ix, makeLenses, to, toListOf,
-                                               traversed, use, uses, view, (%=), (-~),
-                                               (.=), (.~), (<%=), (?=), (?~), (^.), (^?),
-                                               _2)
+                                               traversed, use, uses, view, (%=), (%~),
+                                               (-~), (.=), (.~), (<%=), (?=), (?~), (^.),
+                                               (^?), _2)
 import qualified Control.Monad.STM            as STM
 import           Control.Monad.Trans.Maybe    (MaybeT (..), runMaybeT)
 import qualified Crypto.Sign.Ed25519          as Ed25519
@@ -29,6 +29,7 @@ import           Data.List                    (findIndex)
 import           Data.List.NonEmpty           (NonEmpty ((:|)))
 import qualified Data.List.NonEmpty           as NE
 import qualified Data.Map                     as M
+import qualified Data.Semigroup               as S
 import           Data.Time.Clock              (UTCTime, addUTCTime, getCurrentTime)
 import           System.Random                (Random, StdGen, mkStdGen, newStdGen,
                                                randomR)
@@ -178,7 +179,7 @@ makeLenses ''DharmaState
 -- possible, but meaningless in terms of dharma.
 newtype MagicianM a = MagicianM
     { getMagicianM :: StateT BeingReflection IO a
-    } deriving (Functor, Applicative, Monad, MonadState BeingReflection, MonadIO, W.CanLog)
+    } deriving (Functor, Applicative, Monad, MonadState BeingReflection, MonadIO, W.CanLog,MonadThrow, MonadCatch)
 
 instance W.HasLoggerName MagicianM where
     getLoggerName = do
@@ -215,7 +216,10 @@ spawnCreatures magicians = do
         liftIO $ threadDelay $ 5 * 100 * 1000
         putText "Starting magician thread"
         void $ liftIO $ forkIO $ void $ do
-            runStateT (getMagicianM (magician >> commitAction Die)) refl
+            let runCycle = do
+                    magician `catch` (\(e::SomeException) -> pass)
+                    commitAction Die
+            runStateT (getMagicianM runCycle) refl
   where
     genParams :: PublicKey -> DharmaM (Being, BeingReflection)
     genParams dharmaPk = do
@@ -270,18 +274,23 @@ applyAction refl (Just action) = runMaybeT $ do
                 karma <- MaybeT $ use $ karma . at refl
                 target <- MaybeT $ pure $ view kTargetRequest karma
                 (attack,delay,castTime) <- MaybeT $ pure $ view kAttackRequest karma
-                guard $ addUTCTime (fromIntegral delay) castTime < attackTime
+                guard $ fromIntegral delay `addUTCTime` castTime < attackTime
                 targetRefl <- MaybeT $ uses creatures $
                     fmap fst . find ((== target) . view bId . snd) . M.assocs
                 (newHealth :: Int) <- fmap (view bHealth) . MaybeT $
                     creatures . at targetRefl <%= fmap (bHealth -~ attack)
-                when (newHealth <= 0) $ lift $ creatures %= M.delete targetRefl
+                when (newHealth <= 0) $ do
+                    targetGens <- view bGenerators <$> MaybeT (use $ creatures . at targetRefl)
+                    creatures . at refl %= fmap (bGenerators %~ (S.<> targetGens))
+                    creatures %= M.delete targetRefl
             pure $ (maybe WNope (const WDone) res, being)
         Die               -> do
+            isAlive <- uses creatures $ elem refl . M.keys
             -- What a banality, duh
-            creatures . at refl %= fmap (bHealth .~ 0)
-            creatures %= M.delete refl
-            pure (WDone, being)
+            when isAlive $ do
+                creatures . at refl %= fmap (bHealth .~ 0)
+                creatures %= M.delete refl
+            pure (bool WNope WDone isAlive, being)
         AttainBodhi       -> do
             -- Your karma is clear now
             karma . at refl ?= def
@@ -299,8 +308,6 @@ spinSansara :: DharmaM ()
 spinSansara = do
     refls <- toListOfM creatures $ to M.assocs . traversed
     sk <- use dharmaSk
-    -- Hi there! You're dead!
-    logInfo "Dharma reporting: killing everyone"
     -- Collect all actions of this spin
     rawActions <-
         atomically $ forM refls $
@@ -350,9 +357,20 @@ waitResponse = do
 -- | A regular suffering magician that fights for nothing.
 magicianSuffer :: MagicianM ()
 magicianSuffer = do
-    logInfo $ "Waiting for the world to tell me what to do"
+    logInfo $ "Asking the world to choose a target"
+    commitAction ChooseCreature
+    WBeing beingId <- waitResponse
+    logInfo $ "I'll be attacking " <> show beingId
+    commitAction CastAttack
+    WCastedAttack damage delay <- waitResponse
+    logInfo $ "I'll do " <> show damage <> " damage after " <> show delay <> " seconds"
+    liftIO $ threadDelay $ delay * (1000 * 1005)
+    logInfo "Attacking!"
+    commitAction PerformAttack
     resp <- waitResponse
     logInfo $ "The world told me: " <> show resp
+    -- suffering never ends
+    magicianSuffer
 
 kamikaze :: MagicianM ()
 kamikaze = commitAction Die
