@@ -1,6 +1,8 @@
 {-# LANGUAGE DeriveGeneric              #-}
 {-# LANGUAGE FlexibleContexts           #-}
+{-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE MultiWayIf                 #-}
 {-# LANGUAGE NoImplicitPrelude          #-}
 {-# LANGUAGE StandaloneDeriving         #-}
 {-# LANGUAGE TemplateHaskell            #-}
@@ -8,14 +10,15 @@
 
 -- | HW 11 solutions
 
-module Randomania where
+module Randomania (rollSansara) where
 
 import qualified Base                         as Base
 import           Control.Concurrent           (forkIO)
 import           Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar,
                                                swapTMVar, takeTMVar, tryReadTMVar,
                                                tryTakeTMVar)
-import           Control.Concurrent.STM.TVar  (TVar, modifyTVar, newTVarIO, writeTVar)
+import           Control.Concurrent.STM.TVar  (TVar, modifyTVar, newTVarIO, readTVar,
+                                               writeTVar)
 import           Control.Lens                 (at, filtered, ix, makeLenses, to, toListOf,
                                                traversed, use, uses, view, (%=), (%~),
                                                (-~), (.=), (.~), (<%=), (?=), (?~), (^.),
@@ -33,7 +36,9 @@ import qualified Data.Semigroup               as S
 import           Data.Time.Clock              (UTCTime, addUTCTime, getCurrentTime)
 import           System.Random                (Random, StdGen, mkStdGen, newStdGen,
                                                randomR)
-import           System.Wlog                  (logDebug, logError, logInfo)
+import           System.Wlog                  (LoggingFormat (..), logDebug, logError,
+                                               logInfo, logNotice)
+
 import qualified System.Wlog                  as W
 import           Universum
 
@@ -212,14 +217,15 @@ spawnCreatures magicians = do
             second $ const $ filter (/= being) beings
         creatures %= M.insert refl being
         karma %= M.insert refl def
-    forM_ (params `zip` magicians) $ \((_,refl),magician) -> do
+    forM_ (params `zip` magicians) $ \((being,refl),magician) -> do
         liftIO $ threadDelay $ 5 * 100 * 1000
-        putText "Starting magician thread"
+        logInfo $ "Starting magician thread for " <> show (being ^. bId)
         void $ liftIO $ forkIO $ void $ do
             let runCycle = do
                     magician `catch` (\(e::SomeException) -> pass)
                     commitAction Die
             runStateT (getMagicianM runCycle) refl
+            putText $ "Thread of magician " <> show (being ^. bId) <> " was terminated"
   where
     genParams :: PublicKey -> DharmaM (Being, BeingReflection)
     genParams dharmaPk = do
@@ -257,6 +263,7 @@ applyAction refl (Just action) = runMaybeT $ do
             whenJust chosenBeing $ \b -> do
                 karma . at refl %= fmap (kTargetRequest ?~ (b ^. _2 . bId))
                 karma . at refl %= fmap (kAttackRequest .~ Nothing)
+            logDebug $ "Responding with: " <> show decision
             (decision,) <$> uses creatures (lookup' refl)
         CastAttack        -> do
             let (g:|gs) = being ^. bGenerators
@@ -280,6 +287,10 @@ applyAction refl (Just action) = runMaybeT $ do
                 (newHealth :: Int) <- fmap (view bHealth) . MaybeT $
                     creatures . at targetRefl <%= fmap (bHealth -~ attack)
                 when (newHealth <= 0) $ do
+                    lift $ logNotice $
+                        "Woah! Wizard " <> show (being ^. bId) <>
+                        " has just killed " <>
+                        show (targetRefl ^. reflEssense . to toPublic)
                     targetGens <- view bGenerators <$> MaybeT (use $ creatures . at targetRefl)
                     creatures . at refl %= fmap (bGenerators %~ (S.<> targetGens))
                     creatures %= M.delete targetRefl
@@ -312,26 +323,37 @@ spinSansara = do
     rawActions <-
         atomically $ forM refls $
         \(refl,being) -> fmap (refl,being,) <$> tryTakeTMVar (refl ^. reflAction)
-    let First actionM = mconcat $ map First rawActions
     -- Process each action
-    whenJust actionM $ \(refl,being,action) -> do
+    forM_ (catMaybes rawActions) $ \(refl,being,action) -> do
         -- Process action
+        logDebug "Processing actions"
         let checkedAction = fromSigned (being ^. bId) action
         respM <- applyAction refl checkedAction
+        logDebug "Applied action"
         let (resp,newBeing) = fromMaybe (You'reDeadMan,being) respM
         signedResp <- uses dharmaSk $ \sk -> mkSigned sk resp
         -- Retrieve current state
         aliveAll <- uses creatures M.assocs
         let aliveBeings = map snd aliveAll
+        logDebug "Commiting changes"
         atomically $ do
+            let overrideTMVar v a = tryTakeTMVar v >> putTMVar v a
             -- Respond to the current hero and update his resp/view
-            swapTMVar (refl ^. reflResponse) signedResp
+            overrideTMVar (refl ^. reflResponse) signedResp
             writeTVar (refl ^. reflInspect) (newBeing,filter (/= newBeing) aliveBeings)
             -- Also update everyone else's view
             forM_ (filter ((/= refl) . fst) aliveAll) $ \(refl,being) ->
                 writeTVar (refl ^. reflInspect) (being,filter (/= being) aliveBeings)
-    logInfo "Sansara wheel just made another spin"
-    liftIO $ threadDelay $ 1 * 1000 * 1000
+        logDebug "This round changes commited"
+    beingsLeft <- use $ creatures . to M.elems
+    let beingsN = length beingsLeft
+    if beingsN <= 1
+    then do
+        liftIO $ threadDelay $ 2 * 1000 * 1000
+        logInfo $ "The game is over. Participants left: " <> show beingsN
+        when (beingsN == 1) $ logInfo $
+            "Here's a winner: " <> show (view bId <$> head beingsLeft)
+    else spinSansara
 
 ----------------------------------------------------------------------------
 -- Creatures logic
@@ -346,10 +368,13 @@ commitAction action = do
 waitResponse :: MagicianM WorldResponse
 waitResponse = do
     respVar <- use reflResponse
-    resp <- atomically $ takeTMVar respVar
-    respM <- uses reflDharmaTrust $ \pk -> fromSigned pk resp
-    maybe onFailure pure respM
+    respM <- atomically $ tryTakeTMVar respVar
+    maybe (liftIO (threadDelay pollDelay) >> waitResponse) onResp respM
   where
+    pollDelay = 100 * 1000
+    onResp resp = do
+        respM <- uses reflDharmaTrust $ \pk -> fromSigned pk resp
+        maybe onFailure pure respM
     onFailure = do
         logError "I don't believe this world anymore"
         pure You'reDeadMan
@@ -357,8 +382,9 @@ waitResponse = do
 -- | A regular suffering magician that fights for nothing.
 magicianSuffer :: MagicianM ()
 magicianSuffer = do
-    logInfo $ "Asking the world to choose a target"
+    logDebug $ "Asking the world to choose a target"
     commitAction ChooseCreature
+    logDebug $ "Waiting for the response"
     WBeing beingId <- waitResponse
     logInfo $ "I'll be attacking " <> show beingId
     commitAction CastAttack
@@ -367,22 +393,49 @@ magicianSuffer = do
     liftIO $ threadDelay $ delay * (1000 * 1005)
     logInfo "Attacking!"
     commitAction PerformAttack
-    resp <- waitResponse
-    logInfo $ "The world told me: " <> show resp
+    _ <- waitResponse
     -- suffering never ends
-    magicianSuffer
+    var <- use reflInspect
+    health <- view bHealth . fst <$> atomically (readTVar var)
+    if | health < 40 -> do
+             logNotice $
+                 "I'm almost down, but will strike back! Stil have " <> show health <> " hp!"
+             magicianSuffer
+       | health <= 0 -> logNotice "I have no regrets, death!"
+       | otherwise -> magicianSuffer
 
-kamikaze :: MagicianM ()
-kamikaze = commitAction Die
+observer :: MagicianM ()
+observer = do
+    body <- getBody
+    observerDo body
+  where
+    getBody = do
+        var <- use reflInspect
+        fst <$> atomically (readTVar var)
+    observerDo body = do
+        newBody <- getBody
+        let newHealth = newBody ^. bHealth
+        when (newHealth /= body ^. bHealth) $ do
+            if | newHealth <= 0 -> logNotice "Embrace me, death."
+               | newHealth < 40 ->
+                 logNotice $ "My health is critical: " <> show newHealth <>
+                              ". I'm ready to meet the death."
+               | otherwise ->
+                 logInfo $ "I'm slowly dying with health " <> show newHealth <>
+                           ". There's nothing i can do about it."
+        when (newHealth > 0) $ observerDo newBody
 
 rollSansara :: IO ()
 rollSansara = do
-    W.initLoggingWith def W.Info
+    W.initLoggingWith (LoggingFormat False) W.Info
     (_, dharmaSk) <- keyGen
     void $ runStateT (fromDharmaM bootstrap)
         (DharmaState M.empty M.empty dharmaSk)
   where
     bootstrap = do
-        logInfo "Starting the univere, wzooh"
-        spawnCreatures $ replicate 1 magicianSuffer
-        forever spinSansara
+        logInfo "Starting the universe, wzooh"
+        -- Scenario: magician fight
+        spawnCreatures $ observer : replicate 5 magicianSuffer
+        -- Scenario: massacre in the monastery
+        --spawnCreatures $ magicianSuffer : replicate 10 observer
+        spinSansara

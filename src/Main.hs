@@ -1,4 +1,6 @@
 module Main where
 
+import           Randomania (rollSansara)
+
 main :: IO ()
-main = putStrLn "Hello, Haskell!"
+main = rollSansara
